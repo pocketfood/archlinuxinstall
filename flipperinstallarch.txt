@@ -1,0 +1,167 @@
+DELAY 1000
+STRING cat <<'EOF' > archinstall.sh
+ENTER
+STRING #!/bin/bash
+ENTER
+STRING set -e
+ENTER
+STRING DISK="/dev/sda"
+ENTER
+STRING CRYPT_NAME="cryptroot"
+ENTER
+STRING HOSTNAME="archbox"
+ENTER
+STRING LOCALE="en_US.UTF-8"
+ENTER
+STRING TIMEZONE="UTC"
+ENTER
+STRING KEYMAP="us"
+ENTER
+STRING read -p "Enter username to create: " USERNAME
+ENTER
+STRING MY_PACKAGES=( base linux linux-firmware bash curl openssh mc git wget vim nano nmap openvpn openssl p7zip rsync vlc which whois xclip xarchiver sudo ufw networkmanager grub efibootmgr xorg xorg-xinit xfce4 xfce4-goodies lightdm lightdm-gtk-greeter firefox )
+ENTER
+STRING echo "[+] Wiping disk ${DISK}"
+ENTER
+STRING sgdisk --zap-all "$DISK"
+ENTER
+STRING sgdisk -o "$DISK"
+ENTER
+STRING sgdisk -n 1:0:+512M -t 1:ef00 -c 1:"EFI System Partition" "$DISK"
+ENTER
+STRING sgdisk -n 2:0:0 -t 2:8300 -c 2:"Linux LUKS" "$DISK"
+ENTER
+STRING sleep 2
+ENTER
+STRING echo "[+] Formatting partitions"
+ENTER
+STRING mkfs.fat -F32 "${DISK}1"
+ENTER
+STRING echo "[+] Setting up LUKS (you will be prompted)"
+ENTER
+STRING cryptsetup luksFormat "${DISK}2"
+ENTER
+STRING cryptsetup open "${DISK}2" "${CRYPT_NAME}"
+ENTER
+STRING mkfs.ext4 /dev/mapper/${CRYPT_NAME}
+ENTER
+STRING echo "[+] Mounting filesystem"
+ENTER
+STRING mount /dev/mapper/${CRYPT_NAME} /mnt
+ENTER
+STRING mkdir -p /mnt/boot
+ENTER
+STRING mount "${DISK}1" /mnt/boot
+ENTER
+STRING echo "[+] Installing base system and desktop"
+ENTER
+STRING pacstrap /mnt "${MY_PACKAGES[@]}"
+ENTER
+STRING echo "[+] Generating fstab"
+ENTER
+STRING genfstab -U /mnt >> /mnt/etc/fstab
+ENTER
+STRING echo "[+] Configuring system"
+ENTER
+STRING arch-chroot /mnt /bin/bash <<EOF2
+ENTER
+STRING ln -sf /usr/share/zoneinfo/${TIMEZONE} /etc/localtime
+ENTER
+STRING hwclock --systohc
+ENTER
+STRING echo "${LOCALE} UTF-8" >> /etc/locale.gen
+ENTER
+STRING locale-gen
+ENTER
+STRING echo "LANG=${LOCALE}" > /etc/locale.conf
+ENTER
+STRING echo "KEYMAP=${KEYMAP}" > /etc/vconsole.conf
+ENTER
+STRING echo "${HOSTNAME}" > /etc/hostname
+ENTER
+STRING cat <<HOSTS > /etc/hosts
+ENTER
+STRING 127.0.0.1 localhost
+ENTER
+STRING ::1 localhost
+ENTER
+STRING 127.0.1.1 ${HOSTNAME}.localdomain ${HOSTNAME}
+ENTER
+STRING HOSTS
+ENTER
+STRING echo "[+] Set root password"
+ENTER
+STRING passwd root
+ENTER
+STRING echo "[+] Create user: ${USERNAME}"
+ENTER
+STRING useradd -m -G wheel -s /bin/bash ${USERNAME}
+ENTER
+STRING echo "[+] Set password for ${USERNAME}"
+ENTER
+STRING passwd ${USERNAME}
+ENTER
+STRING echo "%wheel ALL=(ALL) ALL" >> /etc/sudoers
+ENTER
+STRING echo "[+] Configure mkinitcpio for LUKS"
+ENTER
+STRING sed -i 's/^HOOKS=(.*/HOOKS=(base udev autodetect keyboard keymap modconf block encrypt filesystems fsck)/' /etc/mkinitcpio.conf
+ENTER
+STRING mkinitcpio -P
+ENTER
+STRING UUID=\$(blkid -s UUID -o value ${DISK}2)
+ENTER
+STRING sed -i "s/GRUB_CMDLINE_LINUX=\".*\"/GRUB_CMDLINE_LINUX=\"cryptdevice=UUID=\$UUID:${CRYPT_NAME}\"/" /etc/default/grub
+ENTER
+STRING grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
+ENTER
+STRING grub-mkconfig -o /boot/grub/grub.cfg
+ENTER
+STRING systemctl enable NetworkManager
+ENTER
+STRING systemctl enable lightdm
+ENTER
+STRING echo "exec startxfce4" > /home/${USERNAME}/.xinitrc
+ENTER
+STRING chown ${USERNAME}:${USERNAME} /home/${USERNAME}/.xinitrc
+ENTER
+STRING echo "[+] Configuring UFW (Paranoid Mode)"
+ENTER
+STRING ufw default deny incoming
+ENTER
+STRING ufw default allow outgoing
+ENTER
+STRING ufw deny proto icmp
+ENTER
+STRING echo "[+] Setting static DNS"
+ENTER
+STRING echo "nameserver 1.1.1.1" > /etc/resolv.conf
+ENTER
+STRING echo "nameserver 1.0.0.1" >> /etc/resolv.conf
+ENTER
+STRING chattr +i /etc/resolv.conf
+ENTER
+STRING ufw allow out on tun0
+ENTER
+STRING ufw deny out from any to any
+ENTER
+STRING ufw enable
+ENTER
+STRING systemctl enable ufw
+ENTER
+STRING EOF2
+ENTER
+STRING echo "[+] Cleanup"
+ENTER
+STRING umount -R /mnt
+ENTER
+STRING cryptsetup close "${CRYPT_NAME}"
+ENTER
+STRING echo "[✓] Installation complete. You may now reboot into your encrypted Arch desktop!"
+ENTER
+STRING EOF
+ENTER
+STRING chmod +x archinstall.sh
+ENTER
+STRING ./archinstall.sh
+ENTER
