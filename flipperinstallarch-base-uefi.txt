@@ -1,0 +1,251 @@
+DELAY 1000
+STRING cat <<'OUTER_EOF' > archinstall.sh
+ENTER
+STRING #!/bin/bash
+ENTER
+STRING set -euo pipefail
+ENTER
+ENTER
+STRING # ===========================
+ENTER
+STRING # Arch UEFI + LUKS + GRUB (ThinkPad T420 safe)
+ENTER
+STRING # ESP mounted at /boot
+ENTER
+STRING # GRUB installed to fallback EFI/BOOT/BOOTX64.EFI
+ENTER
+STRING # ===========================
+ENTER
+ENTER
+STRING DISK="/dev/sda"
+ENTER
+STRING EFI_PART="${DISK}1"
+ENTER
+STRING LUKS_PART="${DISK}2"
+ENTER
+STRING CRYPT_NAME="cryptroot"
+ENTER
+STRING HOSTNAME="archbox"
+ENTER
+STRING LOCALE="en_US.UTF-8"
+ENTER
+STRING TIMEZONE="UTC"
+ENTER
+STRING KEYMAP="us"
+ENTER
+ENTER
+STRING PACKAGES=(
+ENTER
+STRING   base linux linux-firmware
+ENTER
+STRING   grub efibootmgr
+ENTER
+STRING   networkmanager sudo
+ENTER
+STRING   intel-ucode
+ENTER
+STRING )
+ENTER
+ENTER
+STRING if [[ ! -d /sys/firmware/efi ]]; then
+ENTER
+STRING   echo "[!] Not booted in UEFI mode. Reboot and choose the UEFI USB entry."
+ENTER
+STRING   exit 1
+ENTER
+STRING fi
+ENTER
+ENTER
+STRING if [[ ! -b "$DISK" ]]; then
+ENTER
+STRING   echo "[!] Disk $DISK not found. Edit DISK= in this script."
+ENTER
+STRING   lsblk
+ENTER
+STRING   exit 1
+ENTER
+STRING fi
+ENTER
+ENTER
+STRING echo "[+] Disk layout (double-check):"
+ENTER
+STRING lsblk
+ENTER
+ENTER
+STRING read -rp "This will WIPE ${DISK}. Type YES to continue: " CONFIRM
+ENTER
+STRING if [[ "${CONFIRM}" != "YES" ]]; then
+ENTER
+STRING   echo "Aborted."
+ENTER
+STRING   exit 1
+ENTER
+STRING fi
+ENTER
+ENTER
+STRING read -rp "Enter username to create: " USERNAME
+ENTER
+ENTER
+STRING # One password entry, confirmed (prevents 'didn't match' failures)
+ENTER
+STRING while true; do
+ENTER
+STRING   read -rsp "Enter password for ${USERNAME} (and root): " PASS1; echo
+ENTER
+STRING   read -rsp "Retype password: " PASS2; echo
+ENTER
+STRING   [[ "$PASS1" == "$PASS2" ]] && break
+ENTER
+STRING   echo "[!] Passwords did not match. Try again."
+ENTER
+STRING done
+ENTER
+ENTER
+STRING echo "[+] Partitioning ${DISK} (GPT + ESP + LUKS)"
+ENTER
+STRING sgdisk --zap-all "$DISK"
+ENTER
+STRING sgdisk -o "$DISK"
+ENTER
+STRING sgdisk -n 1:0:+512M -t 1:ef00 -c 1:"EFI System Partition" "$DISK"
+ENTER
+STRING sgdisk -n 2:0:0     -t 2:8309 -c 2:"Linux LUKS"           "$DISK"
+ENTER
+STRING sleep 2
+ENTER
+ENTER
+STRING echo "[+] Formatting ESP (FAT32)"
+ENTER
+STRING mkfs.fat -F32 "$EFI_PART"
+ENTER
+ENTER
+STRING echo "[+] Setting up LUKS on ${LUKS_PART}"
+ENTER
+STRING cryptsetup luksFormat "$LUKS_PART"
+ENTER
+STRING cryptsetup open "$LUKS_PART" "$CRYPT_NAME"
+ENTER
+STRING mkfs.ext4 "/dev/mapper/${CRYPT_NAME}"
+ENTER
+ENTER
+STRING echo "[+] Mounting target filesystem"
+ENTER
+STRING mount "/dev/mapper/${CRYPT_NAME}" /mnt
+ENTER
+STRING mkdir -p /mnt/boot
+ENTER
+STRING mount "$EFI_PART" /mnt/boot
+ENTER
+ENTER
+STRING echo "[+] Installing base system"
+ENTER
+STRING pacstrap /mnt "${PACKAGES[@]}"
+ENTER
+ENTER
+STRING echo "[+] Generating fstab"
+ENTER
+STRING genfstab -U /mnt >> /mnt/etc/fstab
+ENTER
+ENTER
+STRING echo "[+] Configuring system in chroot"
+ENTER
+STRING env TIMEZONE="$TIMEZONE" LOCALE="$LOCALE" KEYMAP="$KEYMAP" HOSTNAME="$HOSTNAME" USERNAME="$USERNAME" PASS1="$PASS1" CRYPT_NAME="$CRYPT_NAME" LUKS_PART="$LUKS_PART" arch-chroot /mnt /bin/bash -euo pipefail <<'CHROOT'
+ENTER
+STRING ln -sf "/usr/share/zoneinfo/${TIMEZONE}" /etc/localtime
+ENTER
+STRING hwclock --systohc
+ENTER
+ENTER
+STRING grep -q "^${LOCALE} UTF-8" /etc/locale.gen || echo "${LOCALE} UTF-8" >> /etc/locale.gen
+ENTER
+STRING locale-gen
+ENTER
+STRING echo "LANG=${LOCALE}" > /etc/locale.conf
+ENTER
+STRING echo "KEYMAP=${KEYMAP}" > /etc/vconsole.conf
+ENTER
+ENTER
+STRING echo "${HOSTNAME}" > /etc/hostname
+ENTER
+STRING cat > /etc/hosts <<'HOSTS'
+ENTER
+STRING 127.0.0.1 localhost
+ENTER
+STRING ::1       localhost
+ENTER
+STRING 127.0.1.1 archbox.localdomain archbox
+ENTER
+STRING HOSTS
+ENTER
+STRING sed -i "s/\<archbox\>/${HOSTNAME}/g" /etc/hosts
+ENTER
+ENTER
+STRING systemctl enable NetworkManager
+ENTER
+ENTER
+STRING # Create user + sudo
+ENTER
+STRING useradd -m -G wheel -s /bin/bash "${USERNAME}"
+ENTER
+STRING echo "%wheel ALL=(ALL:ALL) ALL" > /etc/sudoers.d/10-wheel
+ENTER
+STRING chmod 0440 /etc/sudoers.d/10-wheel
+ENTER
+ENTER
+STRING # Set passwords non-interactively (reliable)
+ENTER
+STRING echo "root:${PASS1}" | chpasswd
+ENTER
+STRING echo "${USERNAME}:${PASS1}" | chpasswd
+ENTER
+ENTER
+STRING # mkinitcpio: ensure encrypt hook is present before filesystems
+ENTER
+STRING sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect keyboard keymap consolefont block encrypt filesystems fsck)/' /etc/mkinitcpio.conf
+ENTER
+STRING mkinitcpio -p linux
+ENTER
+ENTER
+STRING # GRUB cmdline: use REAL LUKS UUID
+ENTER
+STRING UUID="$(blkid -s UUID -o value "${LUKS_PART}")"
+ENTER
+STRING if [[ -z "${UUID}" ]]; then echo "[!] Could not read UUID for ${LUKS_PART}" ; exit 1 ; fi
+ENTER
+STRING sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"cryptdevice=UUID=${UUID}:${CRYPT_NAME} root=/dev/mapper/${CRYPT_NAME}\"|" /etc/default/grub
+ENTER
+ENTER
+STRING # GRUB install: ThinkPad-safe fallback boot path
+ENTER
+STRING mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true
+ENTER
+STRING mkdir -p /boot/EFI
+ENTER
+STRING grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=BOOT --removable --recheck --no-nvram
+ENTER
+STRING grub-mkconfig -o /boot/grub/grub.cfg
+ENTER
+ENTER
+STRING # Proof output (helps debugging)
+ENTER
+STRING echo "[+] EFI loaders:"
+ENTER
+STRING ls -R /boot/EFI || true
+ENTER
+STRING CHROOT
+ENTER
+ENTER
+STRING echo "[+] Cleanup"
+ENTER
+STRING umount -R /mnt
+ENTER
+STRING cryptsetup close "${CRYPT_NAME}"
+ENTER
+STRING echo "[✓] Install complete. Reboot and in BIOS set: Both / UEFI First / Secure Boot Disabled."
+ENTER
+STRING OUTER_EOF
+ENTER
+STRING chmod +x archinstall.sh
+ENTER
+STRING ./archinstall.sh
+ENTER
