@@ -1,0 +1,276 @@
+DELAY 1000
+STRING cat <<'OUTER_EOF' > archinstall.sh
+ENTER
+STRING #!/bin/bash
+ENTER
+STRING set -euo pipefail
+ENTER
+ENTER
+STRING # ==============================================================================
+ENTER
+STRING # Arch Linux: UEFI + LUKS (root) + GRUB (ThinkPad-safe) + XFCE desktop
+ENTER
+STRING # ==============================================================================
+ENTER
+ENTER
+STRING DISK="/dev/sda"
+ENTER
+STRING CRYPT_NAME="cryptroot"
+ENTER
+STRING HOSTNAME="archbox"
+ENTER
+STRING LOCALE="en_US.UTF-8"
+ENTER
+STRING TIMEZONE="America/New_York"
+ENTER
+STRING KEYMAP="us"
+ENTER
+ENTER
+STRING PACKAGES=(
+ENTER
+STRING   base linux linux-firmware
+ENTER
+STRING   bash curl openssh mc git wget
+ENTER
+STRING   vim nano
+ENTER
+STRING   p7zip rsync which
+ENTER
+STRING   sudo networkmanager
+ENTER
+STRING   grub efibootmgr
+ENTER
+STRING   intel-ucode
+ENTER
+STRING   xorg xorg-xinit
+ENTER
+STRING   xfce4 xfce4-goodies
+ENTER
+STRING   lightdm lightdm-gtk-greeter
+ENTER
+STRING   firefox
+ENTER
+STRING   ufw
+ENTER
+STRING   pipewire pipewire-pulse wireplumber
+ENTER
+STRING )
+ENTER
+ENTER
+STRING if [[ ! -d /sys/firmware/efi ]]; then
+ENTER
+STRING   echo "[!] Not booted in UEFI mode."
+ENTER
+STRING   echo "    Reboot and choose the UEFI entry for your USB installer (F12)."
+ENTER
+STRING   exit 1
+ENTER
+STRING fi
+ENTER
+ENTER
+STRING if [[ ! -b "$DISK" ]]; then
+ENTER
+STRING   echo "[!] DISK '$DISK' not found. Edit DISK=... at top."
+ENTER
+STRING   lsblk
+ENTER
+STRING   exit 1
+ENTER
+STRING fi
+ENTER
+ENTER
+STRING part() {
+ENTER
+STRING   local n="$1"
+ENTER
+STRING   if [[ "$DISK" =~ nvme|mmcblk ]]; then
+ENTER
+STRING     echo "${DISK}p${n}"
+ENTER
+STRING   else
+ENTER
+STRING     echo "${DISK}${n}"
+ENTER
+STRING   fi
+ENTER
+STRING }
+ENTER
+ENTER
+STRING EFI_PART="$(part 1)"
+ENTER
+STRING LUKS_PART="$(part 2)"
+ENTER
+ENTER
+STRING echo
+ENTER
+STRING echo "[+] Target disk: $DISK"
+ENTER
+STRING lsblk -o NAME,SIZE,FSTYPE,TYPE,MOUNTPOINT "$DISK" || true
+ENTER
+STRING echo
+ENTER
+ENTER
+STRING read -rp "This will WIPE ${DISK}. Type YES to continue: " CONFIRM
+ENTER
+STRING if [[ "${CONFIRM}" != "YES" ]]; then
+ENTER
+STRING   echo "Aborted."
+ENTER
+STRING   exit 1
+ENTER
+STRING fi
+ENTER
+ENTER
+STRING read -rp "Enter username to create: " USERNAME
+ENTER
+ENTER
+STRING while true; do
+ENTER
+STRING   read -rsp "Enter password for ${USERNAME} (and root): " PASS1; echo
+ENTER
+STRING   read -rsp "Retype password: " PASS2; echo
+ENTER
+STRING   [[ "$PASS1" == "$PASS2" ]] && break
+ENTER
+STRING   echo "[!] Passwords did not match. Try again."
+ENTER
+STRING done
+ENTER
+ENTER
+STRING echo "[+] Partitioning (GPT + ESP + LUKS)"
+ENTER
+STRING sgdisk --zap-all "$DISK"
+ENTER
+STRING sgdisk -o "$DISK"
+ENTER
+STRING sgdisk -n 1:0:+512M -t 1:ef00 -c 1:"EFI System Partition" "$DISK"
+ENTER
+STRING sgdisk -n 2:0:0     -t 2:8309 -c 2:"Linux LUKS"           "$DISK"
+ENTER
+STRING sleep 2
+ENTER
+ENTER
+STRING echo "[+] Formatting ESP (FAT32): $EFI_PART"
+ENTER
+STRING mkfs.fat -F32 "$EFI_PART"
+ENTER
+ENTER
+STRING echo "[+] Setting up LUKS on: $LUKS_PART"
+ENTER
+STRING cryptsetup luksFormat "$LUKS_PART"
+ENTER
+STRING cryptsetup open "$LUKS_PART" "$CRYPT_NAME"
+ENTER
+STRING mkfs.ext4 "/dev/mapper/${CRYPT_NAME}"
+ENTER
+ENTER
+STRING echo "[+] Mounting root + ESP"
+ENTER
+STRING mount "/dev/mapper/${CRYPT_NAME}" /mnt
+ENTER
+STRING mkdir -p /mnt/boot
+ENTER
+STRING mount "$EFI_PART" /mnt/boot
+ENTER
+ENTER
+STRING echo "[+] Installing packages (base + XFCE)"
+ENTER
+STRING pacstrap /mnt "${PACKAGES[@]}"
+ENTER
+ENTER
+STRING echo "[+] Generating fstab"
+ENTER
+STRING genfstab -U /mnt >> /mnt/etc/fstab
+ENTER
+ENTER
+STRING echo "[+] Configuring system in chroot"
+ENTER
+STRING env TIMEZONE="$TIMEZONE" LOCALE="$LOCALE" KEYMAP="$KEYMAP" HOSTNAME="$HOSTNAME" USERNAME="$USERNAME" PASS1="$PASS1" CRYPT_NAME="$CRYPT_NAME" LUKS_PART="$LUKS_PART" arch-chroot /mnt /bin/bash -euo pipefail <<'CHROOT'
+ENTER
+STRING ln -sf "/usr/share/zoneinfo/${TIMEZONE}" /etc/localtime
+ENTER
+STRING hwclock --systohc
+ENTER
+STRING grep -q "^${LOCALE} UTF-8" /etc/locale.gen || echo "${LOCALE} UTF-8" >> /etc/locale.gen
+ENTER
+STRING locale-gen
+ENTER
+STRING echo "LANG=${LOCALE}" > /etc/locale.conf
+ENTER
+STRING echo "KEYMAP=${KEYMAP}" > /etc/vconsole.conf
+ENTER
+STRING echo "${HOSTNAME}" > /etc/hostname
+ENTER
+STRING cat > /etc/hosts <<'HOSTS'
+ENTER
+STRING 127.0.0.1 localhost
+ENTER
+STRING ::1       localhost
+ENTER
+STRING 127.0.1.1 archbox.localdomain archbox
+ENTER
+STRING HOSTS
+ENTER
+STRING sed -i "s/\<archbox\>/${HOSTNAME}/g" /etc/hosts
+ENTER
+STRING echo "root:${PASS1}" | chpasswd
+ENTER
+STRING useradd -m -G wheel -s /bin/bash "${USERNAME}"
+ENTER
+STRING echo "${USERNAME}:${PASS1}" | chpasswd
+ENTER
+STRING echo "%wheel ALL=(ALL:ALL) ALL" > /etc/sudoers.d/10-wheel
+ENTER
+STRING chmod 0440 /etc/sudoers.d/10-wheel
+ENTER
+STRING systemctl enable NetworkManager
+ENTER
+STRING systemctl enable lightdm
+ENTER
+STRING sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect keyboard keymap consolefont modconf block encrypt filesystems fsck)/' /etc/mkinitcpio.conf
+ENTER
+STRING mkinitcpio -p linux
+ENTER
+STRING UUID="$(blkid -s UUID -o value "${LUKS_PART}")"
+ENTER
+STRING if [[ -z "${UUID}" ]]; then echo "[!] Could not read UUID for ${LUKS_PART}" ; exit 1 ; fi
+ENTER
+STRING sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"cryptdevice=UUID=${UUID}:${CRYPT_NAME} root=/dev/mapper/${CRYPT_NAME}\"|" /etc/default/grub
+ENTER
+STRING mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true
+ENTER
+STRING mkdir -p /boot/EFI
+ENTER
+STRING grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=BOOT --removable --recheck --no-nvram
+ENTER
+STRING grub-mkconfig -o /boot/grub/grub.cfg
+ENTER
+STRING ufw default deny incoming
+ENTER
+STRING ufw default allow outgoing
+ENTER
+STRING ufw enable
+ENTER
+STRING systemctl enable ufw
+ENTER
+STRING echo "[+] EFI loader path should exist:"
+ENTER
+STRING ls -l /boot/EFI/BOOT/BOOTX64.EFI || true
+ENTER
+STRING CHROOT
+ENTER
+ENTER
+STRING echo "[+] Cleanup"
+ENTER
+STRING umount -R /mnt
+ENTER
+STRING cryptsetup close "${CRYPT_NAME}"
+ENTER
+STRING echo "[✓] Done. BIOS: Both + UEFI First + Secure Boot Disabled."
+ENTER
+STRING OUTER_EOF
+ENTER
+STRING chmod +x archinstall.sh
+ENTER
+STRING ./archinstall.sh
+ENTER
